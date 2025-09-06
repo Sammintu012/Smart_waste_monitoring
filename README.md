@@ -1,1 +1,1 @@
-# Smart_waste_monitoring
+# Smart SwachhBin.GL

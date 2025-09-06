@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Waste Management System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0fdf4; /* Light green for sustainability */
+            color: #333;
+        }
+        .page-content {
+            animation: fadeIn 0.8s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        #map {
+            height: 500px;
+            border-radius: 2rem;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+            border: 4px solid #4ade80; /* Brighter green border */
+        }
+        .card {
+            background-color: #ffffff;
+            border-radius: 1.5rem;
+            padding: 2.5rem;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.08);
+            transition: transform 0.3s ease-in-out;
+        }
+        .card:hover {
+            transform: translateY(-5px);
+        }
+        .button-primary {
+            background-color: #10b981;
+            color: white;
+            padding: 0.75rem 2rem;
+            border-radius: 9999px;
+            font-weight: 600;
+            transition: background-color 0.3s, transform 0.2s;
+        }
+        .button-primary:hover {
+            background-color: #059669;
+            transform: scale(1.05);
+        }
+        .button-secondary {
+            background-color: #e5e7eb;
+            color: #4b5563;
+            padding: 0.75rem 2rem;
+            border-radius: 9999px;
+            font-weight: 600;
+            transition: background-color 0.3s, transform 0.2s;
+        }
+        .button-secondary:hover {
+            background-color: #d1d5db;
+            transform: scale(1.05);
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            border-radius: 9999px;
+            font-weight: 600;
+            color: white;
+        }
+        .status-empty { background-color: #4ade80; }
+        .status-half { background-color: #f59e0b; }
+        .status-full { background-color: #ef4444; }
+    </style>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, query, where, addDoc, getDocs, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // IMPORTANT: Global variables are provided by the Canvas environment.
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // --- Firebase Initialization ---
+        let app, db, auth, userId;
+        setLogLevel('debug');
+
+        const initFirebase = async () => {
+            try {
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Firebase config is missing. App cannot function.");
+                    return;
+                }
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('userIdDisplay').textContent = `User ID: ${userId}`;
+                        console.log("User signed in with UID:", userId);
+                        setupListeners();
+                    } else {
+                        console.log("No user is signed in.");
+                        userId = crypto.randomUUID();
+                        document.getElementById('userIdDisplay').textContent = `User ID: ${userId}`;
+                    }
+                });
+            } catch (e) {
+                console.error("Error initializing Firebase:", e);
+                showModal('Error initializing Firebase. Check the console for details.');
+            }
+        };
+
+        // --- Google Maps Integration ---
+        let map, dustbinMarkers = {};
+        const DUSTBIN_ICONS = {
+            'empty': 'http://maps.google.com/mapfiles/ms/icons/green-dot.png',
+            'halfFull': 'http://maps.google.com/mapfiles/ms/icons/yellow-dot.png',
+            'full': 'http://maps.google.com/mapfiles/ms/icons/red-dot.png'
+        };
+
+        async function initMap() {
+            const { Map } = await google.maps.importLibrary("maps");
+            const userLocation = { lat: 22.5726, lng: 88.3639 }; // Default to Kolkata, India
+            map = new Map(document.getElementById("map"), {
+                center: userLocation,
+                zoom: 12,
+                mapId: "DEMO_MAP_ID",
+            });
+        }
+
+        function addDustbinMarker(dustbin) {
+            const position = { lat: dustbin.lat, lng: dustbin.lng };
+            const icon = DUSTBIN_ICONS[dustbin.status];
+
+            if (dustbinMarkers[dustbin.id]) {
+                dustbinMarkers[dustbin.id].setMap(null);
+            }
+
+            const marker = new google.maps.Marker({
+                map: map,
+                position: position,
+                icon: icon,
+                title: dustbin.name
+            });
+
+            marker.addListener("click", () => {
+                showModal(`Dustbin: ${dustbin.name}\nStatus: ${dustbin.status === 'halfFull' ? 'Half-Full' : (dustbin.status === 'empty' ? 'Empty' : 'Full')}\nAssigned to: ${dustbin.assignedTo || 'N/A'}`);
+            });
+
+            dustbinMarkers[dustbin.id] = marker;
+        }
+
+        // --- Firestore Data Operations ---
+        const getDustbinCollectionRef = () => collection(db, `artifacts/${appId}/public/data/dustbins`);
+        const getMaintenanceCollectionRef = () => collection(db, `artifacts/${appId}/public/data/maintenance`);
+
+        // Real-time listener for dustbins
+        const setupListeners = () => {
+            const q = query(getDustbinCollectionRef());
+            onSnapshot(q, (querySnapshot) => {
+                const dustbins = [];
+                let emptyCount = 0;
+                let halfFullCount = 0;
+                let fullCount = 0;
+
+                querySnapshot.forEach((doc) => {
+                    const data = doc.data();
+                    const dustbin = { id: doc.id, ...data };
+                    dustbins.push(dustbin);
+
+                    switch(dustbin.status) {
+                        case 'empty': emptyCount++; break;
+                        case 'halfFull': halfFullCount++; break;
+                        case 'full': fullCount++; break;
+                    }
+                    if (map) {
+                        addDustbinMarker(dustbin);
+                    }
+                });
+                
+                updateAdminDashboard(dustbins, { emptyCount, halfFullCount, fullCount });
+                updateUserDashboard(dustbins);
+            }, (error) => {
+                console.error("Error fetching real-time dustbins:", error);
+            });
+        };
+
+        async function addDustbin(event) {
+            event.preventDefault();
+            const form = event.target;
+            const name = form.dustbinName.value;
+            const lat = parseFloat(form.dustbinLat.value);
+            const lng = parseFloat(form.dustbinLng.value);
+
+            if (!name || isNaN(lat) || isNaN(lng)) {
+                showModal('Please enter valid data for dustbin location.');
+                return;
+            }
+
+            try {
+                await addDoc(getDustbinCollectionRef(), {
+                    name,
+                    lat,
+                    lng,
+                    status: 'empty', // Initial status
+                    lastUpdated: new Date()
+                });
+                form.reset();
+                showModal('Dustbin added successfully!');
+            } catch (e) {
+                console.error("Error adding dustbin:", e);
+                showModal('Failed to add dustbin. See console for details.');
+            }
+        }
+
+        async function updateDustbinStatus(dustbinId, currentStatus) {
+            let newStatus;
+            switch(currentStatus) {
+                case 'empty': newStatus = 'halfFull'; break;
+                case 'halfFull': newStatus = 'full'; break;
+                case 'full': newStatus = 'empty'; break;
+                default: newStatus = 'empty';
+            }
+
+            try {
+                const docRef = doc(db, `artifacts/${appId}/public/data/dustbins`, dustbinId);
+                await updateDoc(docRef, {
+                    status: newStatus,
+                    lastUpdated: new Date()
+                });
+                showModal(`Dustbin status updated to ${newStatus}!`);
+            } catch (e) {
+                console.error("Error updating dustbin status:", e);
+                showModal('Failed to update status. See console for details.');
+            }
+        }
+
+        async function deleteDustbin(dustbinId) {
+            try {
+                const docRef = doc(db, `artifacts/${appId}/public/data/dustbins`, dustbinId);
+                await deleteDoc(docRef);
+                if (dustbinMarkers[dustbinId]) {
+                    dustbinMarkers[dustbinId].setMap(null);
+                    delete dustbinMarkers[dustbinId];
+                }
+                showModal('Dustbin deleted successfully!');
+            } catch (e) {
+                console.error("Error deleting dustbin:", e);
+                showModal('Failed to delete dustbin. See console for details.');
+            }
+        }
+        
+        async function assignMaintenance(event) {
+            event.preventDefault();
+            const form = event.target;
+            const dustbinId = form.dataset.dustbinId;
+            const personName = form.personName.value;
+
+            try {
+                // You can add this to a separate collection for tracking
+                await addDoc(getMaintenanceCollectionRef(), {
+                    dustbinId,
+                    personName,
+                    assignedAt: new Date()
+                });
+                showModal(`Maintenance assigned to ${personName} for dustbin ${dustbinId}`);
+                form.reset();
+                closeMaintenanceModal();
+            } catch (e) {
+                console.error("Error assigning maintenance:", e);
+                showModal('Failed to assign maintenance. See console for details.');
+            }
+        }
+
+        // --- UI Rendering and Event Handlers ---
+        function showPage(pageId) {
+            document.querySelectorAll('.page-content').forEach(page => {
+                page.classList.add('hidden');
+            });
+            document.getElementById(pageId).classList.remove('hidden');
+        }
+
+        function updateAdminDashboard(dustbins, counts) {
+            const dustbinList = document.getElementById('dustbinList');
+            const analyticsContent = document.getElementById('analyticsContent');
+            dustbinList.innerHTML = '';
+            
+            dustbins.forEach(dustbin => {
+                const statusColorClass = `status-${dustbin.status === 'halfFull' ? 'half' : dustbin.status}`;
+                const nextStatusText = { empty: 'Mark as Half', halfFull: 'Mark as Full', full: 'Mark as Empty' }[dustbin.status];
+
+                const listItem = `
+                    <li class="bg-gray-50 p-6 rounded-xl shadow-md mb-4 flex flex-col md:flex-row items-center justify-between border border-gray-200">
+                        <div class="flex-grow">
+                            <h3 class="font-bold text-xl">${dustbin.name}</h3>
+                            <p class="text-sm text-gray-500">Location: Lat ${dustbin.lat.toFixed(4)}, Lng ${dustbin.lng.toFixed(4)}</p>
+                            <span class="status-badge mt-2 ${statusColorClass}">
+                                Status: ${dustbin.status === 'halfFull' ? 'Half-Full' : (dustbin.status === 'empty' ? 'Empty' : 'Full')}
+                            </span>
+                        </div>
+                        <div class="mt-4 md:mt-0 md:ml-4 flex-shrink-0 flex items-center space-x-2">
+                            <button onclick="updateDustbinStatus('${dustbin.id}', '${dustbin.status}')" class="bg-indigo-600 text-white px-4 py-2 rounded-full hover:bg-indigo-700 transition-colors text-sm">
+                                ${nextStatusText}
+                            </button>
+                            <button onclick="showMaintenanceModal('${dustbin.id}')" class="bg-blue-600 text-white px-4 py-2 rounded-full hover:bg-blue-700 transition-colors text-sm">
+                                Assign
+                            </button>
+                            <button onclick="deleteDustbin('${dustbin.id}')" class="bg-rose-600 text-white px-4 py-2 rounded-full hover:bg-rose-700 transition-colors text-sm">
+                                Delete
+                            </button>
+                        </div>
+                    </li>
+                `;
+                dustbinList.innerHTML += listItem;
+            });
+
+            // Update Analytics
+            analyticsContent.innerHTML = `
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-green-500 text-white p-6 rounded-2xl shadow-lg text-center">
+                        <h4 class="text-xl font-bold">Empty Dustbins</h4>
+                        <p class="text-5xl font-extrabold mt-2">${counts.emptyCount}</p>
+                    </div>
+                    <div class="bg-yellow-500 text-white p-6 rounded-2xl shadow-lg text-center">
+                        <h4 class="text-xl font-bold">Half-Full Dustbins</h4>
+                        <p class="text-5xl font-extrabold mt-2">${counts.halfFullCount}</p>
+                    </div>
+                    <div class="bg-red-500 text-white p-6 rounded-2xl shadow-lg text-center">
+                        <h4 class="text-xl font-bold">Full Dustbins</h4>
+                        <p class="text-5xl font-extrabold mt-2">${counts.fullCount}</p>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function updateUserDashboard(dustbins) {
+            const userDustbinList = document.getElementById('userDustbinList');
+            userDustbinList.innerHTML = '';
+            
+            // Sort dustbins to show available ones first
+            const sortedDustbins = dustbins.sort((a, b) => {
+                if (a.status === 'empty') return -1;
+                if (b.status === 'empty') return 1;
+                if (a.status === 'halfFull' && b.status !== 'empty') return -1;
+                return 0;
+            });
+
+            sortedDustbins.forEach(dustbin => {
+                const statusColorClass = `status-${dustbin.status === 'halfFull' ? 'half' : dustbin.status}`;
+                const statusText = dustbin.status === 'halfFull' ? 'Half-Full' : (dustbin.status === 'empty' ? 'Available' : 'Full');
+                const listItem = `
+                    <li class="bg-white p-6 rounded-xl shadow-md mb-4 flex items-center justify-between border border-gray-200">
+                        <div>
+                            <h3 class="font-bold text-lg">${dustbin.name}</h3>
+                            <p class="text-sm text-gray-500">
+                                Status: <span class="font-medium ${dustbin.status === 'full' ? 'text-red-600' : (dustbin.status === 'halfFull' ? 'text-yellow-600' : 'text-green-600')}">${statusText}</span>
+                            </p>
+                        </div>
+                        <button onclick="getDirections(${dustbin.lat}, ${dustbin.lng})" class="bg-indigo-600 text-white px-4 py-2 rounded-full hover:bg-indigo-700 transition-colors text-sm">
+                            Get Directions
+                        </button>
+                    </li>
+                `;
+                userDustbinList.innerHTML += listItem;
+            });
+        }
+
+        function getDirections(lat, lng) {
+            const userLat = 22.5726; // Placeholder
+            const userLng = 88.3639; // Placeholder
+            const directionsUrl = `https://www.google.com/maps/dir/?api=1&origin=${userLat},${userLng}&destination=${lat},${lng}`;
+            window.open(directionsUrl, '_blank');
+        }
+
+        // --- Custom Modal for Alerts ---
+        const modal = document.getElementById('customModal');
+        const modalMessage = document.getElementById('modalMessage');
+        const closeModalButton = document.getElementById('closeModal');
+        
+        function showModal(message) {
+            modalMessage.textContent = message;
+            modal.classList.remove('hidden');
+        }
+
+        closeModalButton.addEventListener('click', () => {
+            modal.classList.add('hidden');
+        });
+
+        // --- Maintenance Modal ---
+        const maintenanceModal = document.getElementById('maintenanceModal');
+        const maintenanceForm = document.getElementById('maintenanceForm');
+        const closeMaintenanceButton = document.getElementById('closeMaintenanceModal');
+
+        function showMaintenanceModal(dustbinId) {
+            maintenanceForm.dataset.dustbinId = dustbinId;
+            maintenanceModal.classList.remove('hidden');
+        }
+        
+        function closeMaintenanceModal() {
+            maintenanceModal.classList.add('hidden');
+        }
+
+        // --- Initial setup ---
+        window.addEventListener('load', async () => {
+            await initFirebase();
+            await initMap();
+            document.getElementById('loader').classList.add('hidden');
+            showPage('home');
+        });
+
+        window.showPage = showPage;
+        window.addDustbin = addDustbin;
+        window.updateDustbinStatus = updateDustbinStatus;
+        window.deleteDustbin = deleteDustbin;
+        window.getDirections = getDirections;
+        window.showMaintenanceModal = showMaintenanceModal;
+    </script>
+    <script async src="https://maps.googleapis.com/maps/api/js?key=&callback=initMap&v=beta"></script>
+</head>
+<body class="bg-gray-100 antialiased text-gray-800">
+
+    <!-- Navbar -->
+    <nav class="bg-white p-4 shadow-lg sticky top-0 z-50 rounded-b-3xl">
+        <div class="container mx-auto flex justify-between items-center">
+            <a href="#" onclick="showPage('home')" class="text-2xl font-bold flex items-center text-emerald-600">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mr-2 text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"></path>
+                    <path d="M12 16a4 4 0 0 0 4-4H8a4 4 0 0 0 4 4z"></path>
+                    <path d="M12 2v6"></path>
+                    <path d="M12 16v6"></path>
+                    <path d="M4.93 4.93l4.24 4.24"></path>
+                    <path d="M14.83 14.83l4.24 4.24"></path>
+                    <path d="M4.93 19.07l4.24-4.24"></path>
+                    <path d="M14.83 9.17l4.24-4.24"></path>
+                </svg>
+                Smart SwachhBin.GL
+            </a>
+            <div class="space-x-2 flex items-center">
+                <button onclick="showPage('userPage')" class="button-primary">User Module</button>
+                <button onclick="showPage('adminPage')" class="button-primary">Admin Dashboard</button>
+            </div>
+        </div>
+    </nav>
+    
+    <main class="container mx-auto p-4 mt-8">
+        
+        <!-- Loading Spinner -->
+        <div id="loader" class="flex justify-center items-center h-screen">
+            <div class="animate-spin rounded-full h-32 w-32 border-t-4 border-b-4 border-emerald-500"></div>
+        </div>
+        
+        <!-- Home Page -->
+        <div id="home" class="page-content hidden">
+            <section class="text-center py-16 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-3xl shadow-xl border-4 border-emerald-400">
+                <h1 class="text-5xl sm:text-6xl font-extrabold tracking-tight mb-4 animate-pulse">A Smarter Way to Manage Waste</h1>
+                <p class="text-lg sm:text-xl font-light mb-8 max-w-2xl mx-auto">Real-time waste segregation and monitoring for a cleaner, greener future.</p>
+                <div class="flex justify-center space-x-4">
+                    <button onclick="showPage('userPage')" class="button-secondary bg-white text-emerald-600 hover:bg-gray-100">Find a Dustbin</button>
+                    <button onclick="showPage('adminPage')" class="button-secondary bg-transparent border-2 border-white text-white hover:bg-white hover:text-emerald-600">Admin Login</button>
+                </div>
+                <div class="mt-8 text-sm text-white opacity-75" id="userIdDisplay"></div>
+            </section>
+        </div>
+
+        <!-- User Module -->
+        <div id="userPage" class="page-content hidden">
+            <h2 class="text-4xl font-extrabold text-center mb-6 text-emerald-700">Find a Dustbin Near You</h2>
+            <div id="map" class="mb-8"></div>
+            <div class="card">
+                <h3 class="text-2xl font-bold mb-4 text-emerald-600">Available Dustbins</h3>
+                <ul id="userDustbinList" class="space-y-4">
+                    <!-- Dustbin list will be populated here -->
+                </ul>
+            </div>
+        </div>
+
+        <!-- Admin Dashboard -->
+        <div id="adminPage" class="page-content hidden">
+            <h2 class="text-4xl font-extrabold text-center mb-6 text-emerald-700">Admin Dashboard</h2>
+            
+            <!-- Analytics Section -->
+            <section class="card mb-8">
+                <h3 class="text-2xl font-bold mb-4 text-emerald-600">Data Analytics</h3>
+                <div id="analyticsContent">
+                    <!-- Analytics content will be updated here -->
+                </div>
+            </section>
+
+            <!-- Dustbin Management Section -->
+            <section class="card">
+                <h3 class="text-2xl font-bold mb-4 text-emerald-600">Dustbin Management</h3>
+                
+                <form id="addDustbinForm" onsubmit="addDustbin(event)" class="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <input type="text" name="dustbinName" placeholder="Dustbin Name" class="px-4 py-3 rounded-full border border-gray-300 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    <input type="number" step="any" name="dustbinLat" placeholder="Latitude" class="px-4 py-3 rounded-full border border-gray-300 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    <input type="number" step="any" name="dustbinLng" placeholder="Longitude" class="px-4 py-3 rounded-full border border-gray-300 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    <button type="submit" class="col-span-1 md:col-span-3 button-primary">Add New Dustbin</button>
+                </form>
+
+                <ul id="dustbinList" class="space-y-4">
+                    <!-- Dustbin management list will be populated here -->
+                </ul>
+            </section>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="text-center py-6 text-gray-500 text-sm">
+        Created for the Smart India Hackathon by **Team SwachhBin.GL, GKCIET MALDA**
+    </footer>
+
+    <!-- Custom Modal for Alerts -->
+    <div id="customModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex justify-center items-center hidden">
+        <div class="bg-white p-6 rounded-2xl shadow-lg transform scale-100 transition-transform duration-300 ease-in-out">
+            <p id="modalMessage" class="text-lg text-center mb-4"></p>
+            <button id="closeModal" class="bg-emerald-500 text-white px-6 py-2 rounded-full w-full hover:bg-emerald-600">OK</button>
+        </div>
+    </div>
+    
+    <!-- Maintenance Modal -->
+    <div id="maintenanceModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex justify-center items-center hidden">
+        <div class="bg-white p-6 rounded-xl shadow-lg">
+            <h3 class="text-xl font-semibold mb-4">Assign Maintenance</h3>
+            <form id="maintenanceForm" onsubmit="assignMaintenance(event)">
+                <input type="text" name="personName" placeholder="Maintenance Personnel Name" class="w-full px-4 py-3 rounded-full border border-gray-300 mb-4">
+                <div class="flex justify-end space-x-2">
+                    <button type="button" id="closeMaintenanceModal" onclick="closeMaintenanceModal()" class="bg-gray-300 text-gray-800 px-6 py-2 rounded-full hover:bg-gray-400">Cancel</button>
+                    <button type="submit" class="bg-blue-500 text-white px-6 py-2 rounded-full hover:bg-blue-600">Assign</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</body>
+</html>

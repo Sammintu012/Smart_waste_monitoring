@@ -1,3 +1,5 @@
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -9,7 +11,7 @@
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
         body {
             font-family: 'Inter', sans-serif;
-            background-color: #f0fdf4; /* Light green for sustainability */
+            background-color: #f0fdf4;
             color: #333;
         }
         .page-content {
@@ -20,10 +22,11 @@
             to { opacity: 1; transform: translateY(0); }
         }
         #map {
-            height: 500px;
+            height: 400px;
+            width: 60%;
             border-radius: 2rem;
             box-shadow: 0 10px 20px rgba(0,0,0,0.1);
-            border: 4px solid #4ade80; /* Brighter green border */
+            border: 4px solid #4ade80;
         }
         .card {
             background-color: #ffffff;
@@ -70,7 +73,6 @@
         .status-half { background-color: #f59e0b; }
         .status-full { background-color: #ef4444; }
     </style>
-    <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -375,11 +377,89 @@
             });
         }
 
-        function getDirections(lat, lng) {
-            const userLat = 22.5726; // Placeholder
-            const userLng = 88.3639; // Placeholder
-            const directionsUrl = `https://www.google.com/maps/dir/?api=1&origin=${userLat},${userLng}&destination=${lat},${lng}`;
-            window.open(directionsUrl, '_blank');
+        let directionsService;
+        let directionsRenderer;
+
+        async function getDirections(lat, lng) {
+            // Initialize services
+            if (!directionsService) {
+                const { DirectionsService } = await google.maps.importLibrary("routes");
+                directionsService = new DirectionsService();
+            }
+            if (!directionsRenderer) {
+                const { DirectionsRenderer } = await google.maps.importLibrary("routes");
+                directionsRenderer = new DirectionsRenderer();
+                directionsRenderer.setMap(map);
+            }
+
+            // Get user's current location to use as the origin
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(position => {
+                    const origin = { lat: position.coords.latitude, lng: position.coords.longitude };
+                    const destination = { lat: lat, lng: lng };
+
+                    const request = {
+                        origin: origin,
+                        destination: destination,
+                        travelMode: google.maps.TravelMode.DRIVING
+                    };
+
+                    directionsService.route(request, (result, status) => {
+                        if (status === google.maps.DirectionsStatus.OK) {
+                            directionsRenderer.setDirections(result);
+                            // Play audio instructions
+                            playAudioInstructions();
+                        } else {
+                            showModal('Directions request failed due to ' + status);
+                        }
+                    });
+                }, () => {
+                    showModal('Unable to retrieve your location for directions.');
+                });
+            } else {
+                showModal('Geolocation is not supported by your browser.');
+            }
+        }
+        
+        function playAudioInstructions() {
+            // Placeholder for audio files
+            const audioUrls = {
+                'en': 'http://googleusercontent.com/audio/en_directions.mp3',
+                'hi': 'http://googleusercontent.com/audio/hi_directions.mp3'
+            };
+            const lang = 'en'; // Default language, can be changed based on user preference
+            const audio = new Audio(audioUrls[lang]);
+            audio.play();
+        }
+
+        function getUserLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(position => {
+                    document.getElementById('userLat').value = position.coords.latitude;
+                    document.getElementById('userLng').value = position.coords.longitude;
+                    updateMapAndDustbins(position.coords.latitude, position.coords.longitude);
+                }, () => {
+                    showModal('Unable to retrieve your location.');
+                });
+            } else {
+                showModal('Geolocation is not supported by your browser.');
+            }
+        }
+        
+        async function updateMapAndDustbins(lat, lng) {
+            const { LatLng } = await google.maps.importLibrary("core");
+            map.setCenter(new LatLng(lat, lng));
+            map.setZoom(15);
+            // After updating map center, you can optionally filter and show nearby dustbins
+            showAvailableDustbins(lat, lng);
+        }
+
+        function showAvailableDustbins(userLat, userLng) {
+            const dustbins = [
+                { id: 'SB01', name: 'GKCIET Admin Block', lat: 24.9602, lng: 87.8920, status: 'empty' }
+            ];
+            updateUserDashboard(dustbins);
+            dustbins.forEach(dustbin => addDustbinMarker(dustbin));
         }
 
         // --- Custom Modal for Alerts ---
@@ -424,25 +504,18 @@
         window.deleteDustbin = deleteDustbin;
         window.getDirections = getDirections;
         window.showMaintenanceModal = showMaintenanceModal;
+        window.getUserLocation = getUserLocation;
+        window.updateMapAndDustbins = updateMapAndDustbins;
+        window.showAvailableDustbins = showAvailableDustbins;
     </script>
     <script async src="https://maps.googleapis.com/maps/api/js?key=&callback=initMap&v=beta"></script>
 </head>
 <body class="bg-gray-100 antialiased text-gray-800">
 
-    <!-- Navbar -->
     <nav class="bg-white p-4 shadow-lg sticky top-0 z-50 rounded-b-3xl">
         <div class="container mx-auto flex justify-between items-center">
             <a href="#" onclick="showPage('home')" class="text-2xl font-bold flex items-center text-emerald-600">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mr-2 text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"></path>
-                    <path d="M12 16a4 4 0 0 0 4-4H8a4 4 0 0 0 4 4z"></path>
-                    <path d="M12 2v6"></path>
-                    <path d="M12 16v6"></path>
-                    <path d="M4.93 4.93l4.24 4.24"></path>
-                    <path d="M14.83 14.83l4.24 4.24"></path>
-                    <path d="M4.93 19.07l4.24-4.24"></path>
-                    <path d="M14.83 9.17l4.24-4.24"></path>
-                </svg>
+                <img src="https://i.ibb.co/L8y2nJ7/smart-Swachh-Bin-GL-logo.png" alt="Smart SwachhBin.GL Logo" class="h-8 w-8 mr-2 rounded-full">
                 Smart SwachhBin.GL
             </a>
             <div class="space-x-2 flex items-center">
@@ -454,12 +527,10 @@
     
     <main class="container mx-auto p-4 mt-8">
         
-        <!-- Loading Spinner -->
         <div id="loader" class="flex justify-center items-center h-screen">
             <div class="animate-spin rounded-full h-32 w-32 border-t-4 border-b-4 border-emerald-500"></div>
         </div>
         
-        <!-- Home Page -->
         <div id="home" class="page-content hidden">
             <section class="text-center py-16 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-3xl shadow-xl border-4 border-emerald-400">
                 <h1 class="text-5xl sm:text-6xl font-extrabold tracking-tight mb-4 animate-pulse">A Smarter Way to Manage Waste</h1>
@@ -472,31 +543,36 @@
             </section>
         </div>
 
-        <!-- User Module -->
         <div id="userPage" class="page-content hidden">
             <h2 class="text-4xl font-extrabold text-center mb-6 text-emerald-700">Find a Dustbin Near You</h2>
-            <div id="map" class="mb-8"></div>
-            <div class="card">
-                <h3 class="text-2xl font-bold mb-4 text-emerald-600">Available Dustbins</h3>
-                <ul id="userDustbinList" class="space-y-4">
-                    <!-- Dustbin list will be populated here -->
-                </ul>
+            <div class="flex flex-col md:flex-row space-y-8 md:space-y-0 md:space-x-8">
+                <div id="map"></div>
+                <div class="card md:w-2/5">
+                    <h3 class="text-2xl font-bold mb-4 text-emerald-600">Search by Location</h3>
+                    <div class="mb-4 space-y-2">
+                        <input type="number" step="any" id="userLat" placeholder="Enter Latitude" class="w-full px-4 py-2 rounded-full border border-gray-300 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                        <input type="number" step="any" id="userLng" placeholder="Enter Longitude" class="w-full px-4 py-2 rounded-full border border-gray-300 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                        <div class="flex space-x-2">
+                            <button onclick="updateMapAndDustbins(document.getElementById('userLat').value, document.getElementById('userLng').value)" class="button-primary w-full">Search</button>
+                            <button onclick="getUserLocation()" class="button-secondary w-full">Get My Location</button>
+                        </div>
+                    </div>
+                    <h3 class="text-2xl font-bold mb-4 text-emerald-600">Available Dustbins</h3>
+                    <ul id="userDustbinList" class="space-y-4">
+                        </ul>
+                </div>
             </div>
         </div>
 
-        <!-- Admin Dashboard -->
         <div id="adminPage" class="page-content hidden">
             <h2 class="text-4xl font-extrabold text-center mb-6 text-emerald-700">Admin Dashboard</h2>
             
-            <!-- Analytics Section -->
             <section class="card mb-8">
                 <h3 class="text-2xl font-bold mb-4 text-emerald-600">Data Analytics</h3>
                 <div id="analyticsContent">
-                    <!-- Analytics content will be updated here -->
-                </div>
+                    </div>
             </section>
 
-            <!-- Dustbin Management Section -->
             <section class="card">
                 <h3 class="text-2xl font-bold mb-4 text-emerald-600">Dustbin Management</h3>
                 
@@ -508,18 +584,15 @@
                 </form>
 
                 <ul id="dustbinList" class="space-y-4">
-                    <!-- Dustbin management list will be populated here -->
-                </ul>
+                    </ul>
             </section>
         </div>
     </main>
 
-    <!-- Footer -->
     <footer class="text-center py-6 text-gray-500 text-sm">
         Created for the Smart India Hackathon by **Team SwachhBin.GL, GKCIET MALDA**
     </footer>
 
-    <!-- Custom Modal for Alerts -->
     <div id="customModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex justify-center items-center hidden">
         <div class="bg-white p-6 rounded-2xl shadow-lg transform scale-100 transition-transform duration-300 ease-in-out">
             <p id="modalMessage" class="text-lg text-center mb-4"></p>
@@ -527,7 +600,6 @@
         </div>
     </div>
     
-    <!-- Maintenance Modal -->
     <div id="maintenanceModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex justify-center items-center hidden">
         <div class="bg-white p-6 rounded-xl shadow-lg">
             <h3 class="text-xl font-semibold mb-4">Assign Maintenance</h3>
